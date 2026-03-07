@@ -89,14 +89,14 @@ func main() {
 	defer stop()
 
 	// Health file is removed on exit; created/removed based on processAll results.
-	defer removeHealthFile()
+	defer setHealthy(false)
 
 	// Initial full scan — health reflects whether processing succeeded.
 	if err := processAll(certsRoot, outRoot, password); err != nil {
 		log.Printf("error during initial processing: %v", err)
-		removeHealthFile()
+		setHealthy(false)
 	} else {
-		touchHealthFile()
+		setHealthy(true)
 	}
 
 	// Try fsnotify; fall back to polling if it fails
@@ -114,19 +114,18 @@ func main() {
 		}
 	}
 
-	log.Println("Shutting down...")
+	log.Printf("Shutting down (%v)", context.Cause(ctx))
 }
 
-// touchHealthFile creates the health marker file.
-func touchHealthFile() {
-	if f, err := os.Create(healthFile); err == nil {
-		f.Close()
+// setHealthy creates or removes the health marker file.
+func setHealthy(ok bool) {
+	if ok {
+		if f, err := os.Create(healthFile); err == nil {
+			f.Close()
+		}
+	} else {
+		os.Remove(healthFile)
 	}
-}
-
-// removeHealthFile removes the health marker file.
-func removeHealthFile() {
-	os.Remove(healthFile)
 }
 
 // addWatchDirs recursively adds all directories under root to the watcher.
@@ -204,18 +203,18 @@ func watchLoop(ctx context.Context, watcher *fsnotify.Watcher, certsRoot, outRoo
 			log.Println("cert change detected, processing...")
 			if err := processAll(certsRoot, outRoot, password); err != nil {
 				log.Printf("error during processing: %v", err)
-				removeHealthFile()
+				setHealthy(false)
 			} else {
-				touchHealthFile()
+				setHealthy(true)
 			}
 			resetFallbackTimer(timer, interval)
 
 		case <-timerC:
 			if err := processAll(certsRoot, outRoot, password); err != nil {
 				log.Printf("error during periodic processing: %v", err)
-				removeHealthFile()
+				setHealthy(false)
 			} else {
-				touchHealthFile()
+				setHealthy(true)
 			}
 			timer.Reset(interval)
 
@@ -246,9 +245,9 @@ func pollLoop(ctx context.Context, certsRoot, outRoot, password string, interval
 		case <-ticker.C:
 			if err := processAll(certsRoot, outRoot, password); err != nil {
 				log.Printf("error during processing: %v", err)
-				removeHealthFile()
+				setHealthy(false)
 			} else {
-				touchHealthFile()
+				setHealthy(true)
 			}
 		}
 	}

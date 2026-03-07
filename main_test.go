@@ -440,15 +440,15 @@ func TestHealthFile(t *testing.T) {
 		t.Skip("skipping on Windows: /tmp does not exist")
 	}
 
-	touchHealthFile()
-	defer removeHealthFile()
+	setHealthy(true)
+	defer setHealthy(false)
 
 	if _, err := os.Stat(healthFile); err != nil {
-		t.Fatalf("health file should exist after touchHealthFile: %v", err)
+		t.Fatalf("health file should exist after setHealthy(true): %v", err)
 	}
 
-	removeHealthFile()
+	setHealthy(false)
 	if _, err := os.Stat(healthFile); err == nil {
-		t.Fatal("health file should not exist after removeHealthFile")
+		t.Fatal("health file should not exist after setHealthy(false)")
 	}
 }
