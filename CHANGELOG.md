@@ -1,11 +1,7 @@
 # Changelog
 
-## 2026.03.08 (2026-03-08)
-
-### Added
-
-- Add file size validation and resource exhaustion tests
+## 2026.03.09 (2026-03-09)
 
 ### Changed
 
-- Refactor(cert-convert): extract certificate processing and health check logic
+- Rebuilt with updated publishing pipeline
