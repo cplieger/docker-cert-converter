@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026.03.11 (2026-03-11)
+## 2026.03.11-b633060 (2026-03-11)
 
 ### Added
 
@@ -10,12 +10,6 @@
 
 - Refactor(cert-convert): reorganize code structure and improve file handling
 - Migrate to structured logging and enhance validation
-
-## 2026.03.10 (2026-03-10)
-
-### Changed
-
-- Minor code improvements and optimizations
 
 ## 2026.03.07-3c60ea9 (2026-03-08)
 
