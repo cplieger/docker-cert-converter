@@ -151,6 +151,8 @@ All dependencies are updated automatically via [Renovate](https://github.com/ren
 |------------|---------|--------|
 | golang | `1.26-alpine` | [Go](https://hub.docker.com/_/golang) |
 | gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
+| github.com/fsnotify/fsnotify | `v1.9.0` | [GitHub](https://github.com/fsnotify/fsnotify) |
+| software.sslmate.com/src/go-pkcs12 | `v0.7.0` | [SSLMate](https://pkg.go.dev/software.sslmate.com/src/go-pkcs12) |
 
 ## Design Principles
 

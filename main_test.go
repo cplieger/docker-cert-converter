@@ -497,6 +497,48 @@ func TestProcessAll(t *testing.T) {
 			t.Error("PFX should not be created when .key is missing")
 		}
 	})
+
+	t.Run("retries after conversion failure", func(t *testing.T) {
+		clearHashes()
+		tmpDir := t.TempDir()
+		outDir := t.TempDir()
+
+		// Write a valid cert but an invalid key to trigger conversion failure.
+		certPEM, _ := generateSelfSignedCert(t, "retry", "ecdsa")
+		crtPath := filepath.Join(tmpDir, "retry.crt")
+		keyPath := filepath.Join(tmpDir, "retry.key")
+		if err := os.WriteFile(crtPath, certPEM, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keyPath, []byte("not a key"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// First scan: conversion fails (bad key), but should not cache the hash.
+		if err := processAll(tmpDir, outDir, "", enc); err != nil {
+			t.Fatalf("first processAll: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, "retry.pfx")); err == nil {
+			t.Fatal("PFX should not exist after failed conversion")
+		}
+
+		// Fix the key file — generate a new matching cert+key pair.
+		certPEM2, keyPEM2 := generateSelfSignedCert(t, "retry", "ecdsa")
+		if err := os.WriteFile(crtPath, certPEM2, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keyPath, keyPEM2, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Second scan: should retry because hash was invalidated on failure.
+		if err := processAll(tmpDir, outDir, "", enc); err != nil {
+			t.Fatalf("second processAll: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, "retry.pfx")); err != nil {
+			t.Fatalf("PFX should exist after retry with valid key: %v", err)
+		}
+	})
 }
 
 // --- Tests: changed ---
@@ -541,6 +583,28 @@ func TestChangedOversizedFile(t *testing.T) {
 	// Should report changed (can't hash → treat as changed).
 	if !changed(crtPath, keyPath) {
 		t.Error("oversized file should report changed (hash error)")
+	}
+}
+
+func TestInvalidateHash(t *testing.T) {
+	clearHashes()
+	certPEM, keyPEM := generateSelfSignedCert(t, "test", "ecdsa")
+	tmpDir := t.TempDir()
+	crtPath, keyPath := writeCertAndKey(t, tmpDir, "test", certPEM, keyPEM)
+
+	// First call caches the hash.
+	if !changed(crtPath, keyPath) {
+		t.Fatal("first call should report changed")
+	}
+	if changed(crtPath, keyPath) {
+		t.Fatal("second call should report not changed")
+	}
+
+	// Invalidate the cache — next call should report changed
+	// even though the files haven't changed on disk.
+	invalidateHash(crtPath)
+	if !changed(crtPath, keyPath) {
+		t.Error("should report changed after invalidateHash")
 	}
 }
 

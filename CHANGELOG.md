@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.03.12-0137780 (2026-03-12)
+
+### Fixed
+
+- Improve startup health state and retry logic
+
 ## 2026.03.11-b633060 (2026-03-11)
 
 ### Added

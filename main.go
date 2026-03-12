@@ -82,7 +82,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Health file is removed on exit; created/removed based on processAll results.
+	// Remove stale health file from a previous run that may have crashed
+	// before its defer ran. Without this, the health probe would report
+	// healthy during startup before processAll completes.
+	setHealthy(false)
 	defer setHealthy(false)
 
 	// Initial full scan — health reflects whether processing succeeded.
@@ -340,6 +343,16 @@ func changed(crtPath, keyPath string) bool {
 	return false
 }
 
+// invalidateHash removes the cached hash for a cert path so the next
+// scan retries conversion even if the source files haven't changed.
+func invalidateHash(crtPath string) {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(hashes, crtPath)
+}
+
+// processAll walks certsRoot for .crt files with matching .key files,
+// converting changed pairs to PFX in the corresponding outRoot path.
 func processAll(certsRoot, outRoot, password string, enc *pkcs12.Encoder) error {
 	return filepath.WalkDir(certsRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -373,6 +386,8 @@ func processAll(certsRoot, outRoot, password string, enc *pkcs12.Encoder) error 
 
 		if err := convertToPFX(path, keyPath, destPath, password, enc); err != nil {
 			slog.Error("conversion failed", "cert", rel, "error", err)
+			// Remove cached hash so the next scan retries this pair.
+			invalidateHash(path)
 			return nil
 		}
 
@@ -401,9 +416,19 @@ func readFileWithLimit(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("file exceeds %d byte limit (%d bytes)", limit, info.Size())
 	}
 
-	return io.ReadAll(io.LimitReader(f, limit))
+	// Read limit+1 to detect files that grew between Stat and ReadAll (TOCTOU).
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("file grew past %d byte limit during read", limit)
+	}
+	return data, nil
 }
 
+// convertToPFX reads PEM cert and key files, encodes them as PKCS#12,
+// and writes the result atomically to destPath.
 func convertToPFX(crtPath, keyPath, destPath, password string, enc *pkcs12.Encoder) error {
 	certPEM, err := readFileWithLimit(crtPath, maxFileSize)
 	if err != nil {
@@ -460,6 +485,8 @@ func convertToPFX(crtPath, keyPath, destPath, password string, enc *pkcs12.Encod
 
 // --- PEM Parsing ---
 
+// parseCertChain decodes all CERTIFICATE PEM blocks from pemBytes,
+// returning them in order. Returns an error if no certificates are found.
 func parseCertChain(pemBytes []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
 
@@ -485,6 +512,8 @@ func parseCertChain(pemBytes []byte) ([]*x509.Certificate, error) {
 	return certs, nil
 }
 
+// parsePrivateKey extracts a private key from PEM data, trying PKCS8
+// first, then falling back to PKCS1 (RSA) and SEC1 (EC) formats.
 func parsePrivateKey(pemBytes []byte) (crypto.PrivateKey, error) {
 	var block *pem.Block
 	for {
