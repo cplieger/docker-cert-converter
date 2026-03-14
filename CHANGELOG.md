@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026.03.13-0b2cad0 (2026-03-14)
+
+### Added
+
+- Test(cert-convert): add property-based and edge case tests
+- Test(cert-convert): add comprehensive test coverage for file watching and key parsing
+
+### Changed
+
+- Test(cert-convert): use bytes.Equal for slice comparison
+
 ## 2026.03.12-0137780 (2026-03-12)
 
 ### Fixed

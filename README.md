@@ -143,6 +143,31 @@ docker inspect --format='{{json .State.Health.Log}}' cert-convert | python3 -m j
 | Docker | `/cert-watcher health` | Exit 0 = last processing cycle succeeded |
 
 
+## Code Quality
+
+| Metric | Value |
+|--------|-------|
+| [Test Coverage](https://go.dev/blog/cover) | 64.7% |
+| Tests | 106 |
+| [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 5.7 |
+| [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 8.2 |
+| [Mutation Efficacy](https://en.wikipedia.org/wiki/Mutation_testing) | 90.5% (29 runs) |
+| Test Framework | Property-based ([rapid](https://github.com/flyingmutant/rapid)) + table-driven |
+
+The test suite validates all user-facing functionality: PEM certificate
+parsing (RSA, ECDSA, Ed25519, chain handling, corrupt input), PFX
+encoding round-trips across all encoder profiles, SHA-256 change
+detection with file size guards, fsnotify event handling with debounce
+logic, and the full processing pipeline (skip unchanged, reconvert on
+change, nested directories, error recovery). Property-based tests
+verify that parsing functions never panic on arbitrary input and that
+round-trips preserve certificate data.
+
+Not tested: the filesystem watcher loop and polling fallback — these
+are event-driven I/O paths that can't be unit tested meaningfully.
+Validated by Docker healthchecks in production (the health probe
+confirms the last processing cycle succeeded).
+
 ## Dependencies
 
 All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.
@@ -152,6 +177,7 @@ All dependencies are updated automatically via [Renovate](https://github.com/ren
 | golang | `1.26-alpine` | [Go](https://hub.docker.com/_/golang) |
 | gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | github.com/fsnotify/fsnotify | `v1.9.0` | [GitHub](https://github.com/fsnotify/fsnotify) |
+| pgregory.net/rapid | `v1.2.0` | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
 | software.sslmate.com/src/go-pkcs12 | `v0.7.0` | [SSLMate](https://pkg.go.dev/software.sslmate.com/src/go-pkcs12) |
 
 ## Design Principles

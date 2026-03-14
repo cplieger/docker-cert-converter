@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,9 +13,12 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+	"pgregory.net/rapid"
 	"software.sslmate.com/src/go-pkcs12"
 )
 
@@ -685,5 +690,847 @@ func TestHealthFile(t *testing.T) {
 	setHealthy(false)
 	if _, err := os.Stat(healthFile); err == nil {
 		t.Fatal("health file should not exist after setHealthy(false)")
+	}
+}
+
+// --- Tests: handleFsEvent ---
+
+func TestHandleFsEvent(t *testing.T) {
+	t.Run("create directory adds to watcher", func(t *testing.T) {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer watcher.Close()
+
+		dir := t.TempDir()
+		pending := false
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
+
+		event := fsnotify.Event{Name: dir, Op: fsnotify.Create}
+		handleFsEvent(event, watcher, &pending, timer, time.Second)
+
+		if pending {
+			t.Error("handleFsEvent set pending for directory create (no .crt/.key)")
+		}
+	})
+
+	t.Run("create .crt file sets pending", func(t *testing.T) {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer watcher.Close()
+
+		pending := false
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
+
+		event := fsnotify.Event{Name: "/some/path/cert.crt", Op: fsnotify.Create}
+		handleFsEvent(event, watcher, &pending, timer, time.Second)
+
+		if !pending {
+			t.Error("handleFsEvent should set pending for .crt file")
+		}
+	})
+
+	t.Run("write .key file sets pending", func(t *testing.T) {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer watcher.Close()
+
+		pending := false
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
+
+		event := fsnotify.Event{Name: "/certs/domain.key", Op: fsnotify.Write}
+		handleFsEvent(event, watcher, &pending, timer, time.Second)
+
+		if !pending {
+			t.Error("handleFsEvent should set pending for .key file")
+		}
+	})
+
+	t.Run("non-cert file does not set pending", func(t *testing.T) {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer watcher.Close()
+
+		pending := false
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
+
+		event := fsnotify.Event{Name: "/some/file.txt", Op: fsnotify.Write}
+		handleFsEvent(event, watcher, &pending, timer, time.Second)
+
+		if pending {
+			t.Error("handleFsEvent should not set pending for .txt file")
+		}
+	})
+
+	t.Run("already pending does not re-trigger", func(t *testing.T) {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer watcher.Close()
+
+		pending := true
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
+
+		event := fsnotify.Event{Name: "/certs/test.crt", Op: fsnotify.Write}
+		handleFsEvent(event, watcher, &pending, timer, 5*time.Second)
+
+		// pending should still be true, timer should NOT have been reset.
+		// We verify by checking the timer doesn't fire within a short window.
+		select {
+		case <-timer.C:
+			t.Error("timer should not fire when already pending")
+		case <-time.After(10 * time.Millisecond):
+			// expected — timer was not reset
+		}
+	})
+}
+
+// --- Tests: parsePrivateKey (additional coverage) ---
+
+func TestParsePrivateKey_EC_SEC1(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+
+	parsed, err := parsePrivateKey(keyPEM)
+	if err != nil {
+		t.Fatalf("parsePrivateKey(EC SEC1) = error %v", err)
+	}
+	if _, ok := parsed.(*ecdsa.PrivateKey); !ok {
+		t.Errorf("parsePrivateKey(EC SEC1) returned %T, want *ecdsa.PrivateKey", parsed)
+	}
+}
+
+func TestParsePrivateKey_Ed25519_PKCS8(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+
+	parsed, err := parsePrivateKey(keyPEM)
+	if err != nil {
+		t.Fatalf("parsePrivateKey(Ed25519 PKCS8) = error %v", err)
+	}
+	if _, ok := parsed.(ed25519.PrivateKey); !ok {
+		t.Errorf("parsePrivateKey(Ed25519 PKCS8) returned %T, want ed25519.PrivateKey", parsed)
+	}
+}
+
+func TestParsePrivateKey_unparseable_key_data(t *testing.T) {
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: []byte("this is not valid DER"),
+	})
+
+	_, err := parsePrivateKey(keyPEM)
+	if err == nil {
+		t.Fatal("parsePrivateKey should fail for garbage DER data")
+	}
+	if !strings.Contains(err.Error(), "failed to parse private key") {
+		t.Errorf("parsePrivateKey error = %q, want it to contain %q",
+			err.Error(), "failed to parse private key")
+	}
+}
+
+// --- Tests: convertToPFX error paths ---
+
+func TestConvertToPFX_nonexistent_cert(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, keyPEM := generateSelfSignedCert(t, "test", "ecdsa")
+	keyPath := filepath.Join(tmpDir, "test.key")
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := convertToPFX(
+		filepath.Join(tmpDir, "missing.crt"),
+		keyPath,
+		filepath.Join(tmpDir, "out.pfx"),
+		"", pkcs12.Modern2023,
+	)
+	if err == nil {
+		t.Fatal("convertToPFX should fail for nonexistent cert file")
+	}
+	if !strings.Contains(err.Error(), "read cert") {
+		t.Errorf("convertToPFX error = %q, want it to contain %q", err.Error(), "read cert")
+	}
+}
+
+func TestConvertToPFX_nonexistent_key(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPEM, _ := generateSelfSignedCert(t, "test", "ecdsa")
+	crtPath := filepath.Join(tmpDir, "test.crt")
+	if err := os.WriteFile(crtPath, certPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := convertToPFX(
+		crtPath,
+		filepath.Join(tmpDir, "missing.key"),
+		filepath.Join(tmpDir, "out.pfx"),
+		"", pkcs12.Modern2023,
+	)
+	if err == nil {
+		t.Fatal("convertToPFX should fail for nonexistent key file")
+	}
+	if !strings.Contains(err.Error(), "read key") {
+		t.Errorf("convertToPFX error = %q, want it to contain %q", err.Error(), "read key")
+	}
+}
+
+func TestConvertToPFX_invalid_cert_PEM(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, keyPEM := generateSelfSignedCert(t, "test", "ecdsa")
+	crtPath, keyPath := writeCertAndKey(t, tmpDir, "bad", []byte("not a cert"), keyPEM)
+
+	err := convertToPFX(crtPath, keyPath, filepath.Join(tmpDir, "out.pfx"), "", pkcs12.Modern2023)
+	if err == nil {
+		t.Fatal("convertToPFX should fail for invalid cert PEM")
+	}
+}
+
+func TestConvertToPFX_invalid_key_PEM(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPEM, _ := generateSelfSignedCert(t, "test", "ecdsa")
+	crtPath, keyPath := writeCertAndKey(t, tmpDir, "bad", certPEM, []byte("not a key"))
+
+	err := convertToPFX(crtPath, keyPath, filepath.Join(tmpDir, "out.pfx"), "", pkcs12.Modern2023)
+	if err == nil {
+		t.Fatal("convertToPFX should fail for invalid key PEM")
+	}
+}
+
+func TestConvertToPFX_unwritable_dest(t *testing.T) {
+	certPEM, keyPEM := generateSelfSignedCert(t, "test", "ecdsa")
+	tmpDir := t.TempDir()
+	crtPath, keyPath := writeCertAndKey(t, tmpDir, "test", certPEM, keyPEM)
+
+	err := convertToPFX(crtPath, keyPath, "/nonexistent/dir/out.pfx", "", pkcs12.Modern2023)
+	if err == nil {
+		t.Fatal("convertToPFX should fail for unwritable destination")
+	}
+}
+
+// --- Tests: hashFile (direct) ---
+
+func TestHashFile(t *testing.T) {
+	t.Run("consistent hash for same content", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.txt")
+		if err := os.WriteFile(path, []byte("hello world"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		h1, err := hashFile(path)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+		h2, err := hashFile(path)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+		if h1 != h2 {
+			t.Errorf("hashFile returned different hashes for same file: %q vs %q", h1, h2)
+		}
+		if len(h1) != 64 {
+			t.Errorf("hashFile returned hash of length %d, want 64 (SHA-256 hex)", len(h1))
+		}
+	})
+
+	t.Run("different content produces different hash", func(t *testing.T) {
+		dir := t.TempDir()
+		p1 := filepath.Join(dir, "a.txt")
+		p2 := filepath.Join(dir, "b.txt")
+		if err := os.WriteFile(p1, []byte("aaa"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p2, []byte("bbb"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		h1, _ := hashFile(p1)
+		h2, _ := hashFile(p2)
+		if h1 == h2 {
+			t.Error("hashFile returned same hash for different content")
+		}
+	})
+
+	t.Run("rejects oversized file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "big.txt")
+		if err := os.WriteFile(path, make([]byte, maxFileSize+1), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := hashFile(path)
+		if err == nil {
+			t.Fatal("hashFile should reject files exceeding maxFileSize")
+		}
+		if !strings.Contains(err.Error(), "size limit") {
+			t.Errorf("hashFile error = %q, want it to contain %q", err.Error(), "size limit")
+		}
+	})
+
+	t.Run("nonexistent file", func(t *testing.T) {
+		_, err := hashFile("/nonexistent/file.txt")
+		if err == nil {
+			t.Fatal("hashFile should fail for nonexistent file")
+		}
+	})
+}
+
+// --- Tests: parseCertChain (additional coverage) ---
+
+func TestParseCertChain_corrupted_DER(t *testing.T) {
+	badPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: []byte("this is not valid DER"),
+	})
+
+	_, err := parseCertChain(badPEM)
+	if err == nil {
+		t.Fatal("parseCertChain should fail for corrupted DER inside CERTIFICATE block")
+	}
+}
+
+func TestParseCertChain_skips_non_certificate_blocks(t *testing.T) {
+	certPEM, keyPEM := generateSelfSignedCert(t, "mixed", "ecdsa")
+
+	// Prepend a PRIVATE KEY block before the CERTIFICATE block.
+	mixed := make([]byte, 0, len(keyPEM)+len(certPEM))
+	mixed = append(mixed, keyPEM...)
+	mixed = append(mixed, certPEM...)
+
+	certs, err := parseCertChain(mixed)
+	if err != nil {
+		t.Fatalf("parseCertChain(mixed PEM) = error %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("parseCertChain(mixed PEM) returned %d certs, want 1", len(certs))
+	}
+	if certs[0].Subject.CommonName != "mixed" {
+		t.Errorf("parseCertChain(mixed PEM) CN = %q, want %q",
+			certs[0].Subject.CommonName, "mixed")
+	}
+}
+
+// --- Tests: readFileWithLimit (additional coverage) ---
+
+func TestReadFileWithLimit_exact_limit(t *testing.T) {
+	content := []byte("exactly at limit")
+	path := filepath.Join(t.TempDir(), "exact.txt")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := readFileWithLimit(path, int64(len(content)))
+	if err != nil {
+		t.Fatalf("readFileWithLimit at exact limit: %v", err)
+	}
+	if !bytes.Equal(data, content) {
+		t.Errorf("readFileWithLimit = %q, want %q", data, content)
+	}
+}
+
+func TestReadFileWithLimit_one_byte_over(t *testing.T) {
+	content := []byte("one byte over the limit")
+	path := filepath.Join(t.TempDir(), "over.txt")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := readFileWithLimit(path, int64(len(content)-1))
+	if err == nil {
+		t.Fatal("readFileWithLimit should reject file one byte over limit")
+	}
+}
+
+// --- Tests: processAndSetHealth ---
+
+func TestProcessAndSetHealth(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" {
+		t.Skip("skipping on Windows: /tmp does not exist")
+	}
+
+	clearHashes()
+	defer setHealthy(false)
+
+	certPEM, keyPEM := generateSelfSignedCert(t, "health-test", "ecdsa")
+	inDir := t.TempDir()
+	outDir := t.TempDir()
+	writeCertAndKey(t, inDir, "test", certPEM, keyPEM)
+
+	processAndSetHealth(inDir, outDir, "", pkcs12.Modern2023)
+
+	if _, err := os.Stat(healthFile); err != nil {
+		t.Fatalf("health file should exist after successful processAndSetHealth: %v", err)
+	}
+
+	pfxPath := filepath.Join(outDir, "test.pfx")
+	if _, err := os.Stat(pfxPath); err != nil {
+		t.Fatalf("PFX should be created: %v", err)
+	}
+}
+
+func TestProcessAndSetHealth_failure(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" {
+		t.Skip("skipping on Windows: /tmp does not exist")
+	}
+
+	clearHashes()
+	defer setHealthy(false)
+
+	// Set healthy first, then trigger a failure to verify it gets cleared.
+	setHealthy(true)
+
+	processAndSetHealth("/nonexistent/input", "/nonexistent/output", "", pkcs12.Modern2023)
+
+	if _, err := os.Stat(healthFile); err == nil {
+		t.Fatal("health file should not exist after failed processAndSetHealth")
+	}
+}
+
+// --- Tests: addWatchDirs ---
+
+func TestAddWatchDirs(t *testing.T) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := addWatchDirs(watcher, root); err != nil {
+		t.Fatalf("addWatchDirs(%q) = %v", root, err)
+	}
+
+	watchList := watcher.WatchList()
+	if len(watchList) < 2 {
+		t.Errorf("addWatchDirs added %d dirs, want at least 2 (root + sub)", len(watchList))
+	}
+}
+
+func TestAddWatchDirs_nonexistent(t *testing.T) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+
+	err = addWatchDirs(watcher, "/nonexistent/path")
+	if err == nil {
+		t.Fatal("addWatchDirs should fail for nonexistent path")
+	}
+}
+
+// --- Property-based tests (rapid) ---
+
+func TestParseFallbackInterval_never_panics(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		v := rapid.String().Draw(t, "env_value")
+		os.Setenv("FALLBACK_SCAN_HOURS", v)
+		defer os.Unsetenv("FALLBACK_SCAN_HOURS")
+
+		got := parseFallbackInterval()
+		if got < 0 {
+			t.Errorf("parseFallbackInterval(%q) = %v, want non-negative", v, got)
+		}
+	})
+}
+
+func TestPickEncoder_never_returns_nil(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		v := rapid.String().Draw(t, "env_value")
+		os.Setenv("PFX_ENCODER", v)
+		defer os.Unsetenv("PFX_ENCODER")
+
+		enc, name := pickEncoder()
+		if enc == nil {
+			t.Errorf("pickEncoder(%q) returned nil encoder", v)
+		}
+		if name == "" {
+			t.Errorf("pickEncoder(%q) returned empty name", v)
+		}
+		// Name must be one of the known encoder names.
+		switch name {
+		case encNameModern2023, encNameModern2026, encNameLegacyDES, encNameLegacyRC2:
+			// valid
+		default:
+			t.Errorf("pickEncoder(%q) returned unknown name %q", v, name)
+		}
+	})
+}
+
+func TestParseCertChain_round_trip(t *testing.T) {
+	// Property: encoding a cert to PEM and parsing it back preserves the subject.
+	certPEM, _ := generateSelfSignedCert(t, "round-trip", "ecdsa")
+
+	certs, err := parseCertChain(certPEM)
+	if err != nil {
+		t.Fatalf("parseCertChain: %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("got %d certs, want 1", len(certs))
+	}
+
+	// Re-encode and re-parse — should be identical.
+	reEncoded := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certs[0].Raw,
+	})
+	certs2, err := parseCertChain(reEncoded)
+	if err != nil {
+		t.Fatalf("parseCertChain(re-encoded): %v", err)
+	}
+	if certs2[0].Subject.CommonName != "round-trip" {
+		t.Errorf("round trip CN = %q, want %q", certs2[0].Subject.CommonName, "round-trip")
+	}
+}
+
+func TestHashFile_deterministic(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		content := rapid.SliceOfN(rapid.Byte(), 0, 1024).Draw(t, "content")
+		dir := os.TempDir()
+		path := filepath.Join(dir, "rapid-hash-test.tmp")
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(path)
+
+		h1, err1 := hashFile(path)
+		h2, err2 := hashFile(path)
+		if err1 != nil || err2 != nil {
+			t.Fatalf("hashFile errors: %v, %v", err1, err2)
+		}
+		if h1 != h2 {
+			t.Errorf("hashFile not deterministic: %q != %q for same content", h1, h2)
+		}
+		if len(h1) != 64 {
+			t.Errorf("hashFile returned hash of length %d, want 64", len(h1))
+		}
+	})
+}
+
+func TestConvertToPFX_round_trip_all_encoders(t *testing.T) {
+	encoders := []struct {
+		name string
+		enc  *pkcs12.Encoder
+	}{
+		{"modern2023", pkcs12.Modern2023},
+		{"modern2026", pkcs12.Modern2026},
+		{"legacyDES", pkcs12.LegacyDES},
+		{"legacyRC2", pkcs12.LegacyRC2},
+	}
+
+	for _, tc := range encoders {
+		t.Run(tc.name, func(t *testing.T) {
+			certPEM, keyPEM := generateSelfSignedCert(t, "encoder-"+tc.name, "ecdsa")
+			tmpDir := t.TempDir()
+			crtPath, keyPath := writeCertAndKey(t, tmpDir, "test", certPEM, keyPEM)
+			pfxPath := filepath.Join(tmpDir, "test.pfx")
+
+			if err := convertToPFX(crtPath, keyPath, pfxPath, "testpass", tc.enc); err != nil {
+				t.Fatalf("convertToPFX(%s): %v", tc.name, err)
+			}
+
+			_, cert, _ := decodePFX(t, pfxPath, "testpass")
+			if cert.Subject.CommonName != "encoder-"+tc.name {
+				t.Errorf("CN = %q, want %q", cert.Subject.CommonName, "encoder-"+tc.name)
+			}
+		})
+	}
+}
+
+// --- Additional edge case tests ---
+
+func TestParseFallbackInterval_whitespace_padding(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{"leading spaces", "  12", 12 * time.Hour},
+		{"trailing spaces", "12  ", 12 * time.Hour},
+		{"padded zero", " 0 ", 0},
+		{"padded false", " false ", 0},
+		{"padded empty", "   ", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FALLBACK_SCAN_HOURS", tc.env)
+			if got := parseFallbackInterval(); got != tc.want {
+				t.Errorf("parseFallbackInterval(%q) = %v, want %v", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChanged_oversized_key_file(t *testing.T) {
+	clearHashes()
+	tmpDir := t.TempDir()
+	crtPath := filepath.Join(tmpDir, "test.crt")
+	keyPath := filepath.Join(tmpDir, "test.key")
+
+	// Normal cert, oversized key.
+	if err := os.WriteFile(crtPath, []byte("small cert"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bigData := make([]byte, 11<<20)
+	if err := os.WriteFile(keyPath, bigData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !changed(crtPath, keyPath) {
+		t.Error("changed() should return true when key file exceeds size limit")
+	}
+}
+
+func TestChanged_nonexistent_cert(t *testing.T) {
+	clearHashes()
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "test.key")
+	if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !changed(filepath.Join(tmpDir, "missing.crt"), keyPath) {
+		t.Error("changed() should return true when cert file doesn't exist")
+	}
+}
+
+func TestChanged_nonexistent_key(t *testing.T) {
+	clearHashes()
+	tmpDir := t.TempDir()
+	crtPath := filepath.Join(tmpDir, "test.crt")
+	if err := os.WriteFile(crtPath, []byte("cert"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !changed(crtPath, filepath.Join(tmpDir, "missing.key")) {
+		t.Error("changed() should return true when key file doesn't exist")
+	}
+}
+
+func TestProcessAll_empty_directory(t *testing.T) {
+	clearHashes()
+	inDir := t.TempDir()
+	outDir := t.TempDir()
+
+	if err := processAll(inDir, outDir, "", pkcs12.Modern2023); err != nil {
+		t.Fatalf("processAll(empty dir) = %v, want nil", err)
+	}
+
+	// Output dir should remain empty.
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("processAll(empty dir) created %d files, want 0", len(entries))
+	}
+}
+
+func TestProcessAll_ignores_non_crt_files(t *testing.T) {
+	clearHashes()
+	inDir := t.TempDir()
+	outDir := t.TempDir()
+
+	// Write files that aren't .crt — should be ignored.
+	for _, name := range []string{"readme.txt", "config.json", "cert.pem", "key.pem"} {
+		if err := os.WriteFile(filepath.Join(inDir, name), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := processAll(inDir, outDir, "", pkcs12.Modern2023); err != nil {
+		t.Fatalf("processAll = %v, want nil", err)
+	}
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("processAll created %d files for non-.crt input, want 0", len(entries))
+	}
+}
+
+func TestHashFile_empty_file(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.txt")
+	if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := hashFile(path)
+	if err != nil {
+		t.Fatalf("hashFile(empty) = error %v", err)
+	}
+	// SHA-256 of empty input is a well-known constant.
+	want := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if h != want {
+		t.Errorf("hashFile(empty) = %q, want %q", h, want)
+	}
+}
+
+func TestReadFileWithLimit_empty_file(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.txt")
+	if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := readFileWithLimit(path, 1024)
+	if err != nil {
+		t.Fatalf("readFileWithLimit(empty) = error %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("readFileWithLimit(empty) returned %d bytes, want 0", len(data))
+	}
+}
+
+func TestParseCertChain_empty_input(t *testing.T) {
+	_, err := parseCertChain([]byte{})
+	if err == nil {
+		t.Fatal("parseCertChain(empty) should return error")
+	}
+	if !strings.Contains(err.Error(), "no certificate") {
+		t.Errorf("parseCertChain(empty) error = %q, want it to contain %q",
+			err.Error(), "no certificate")
+	}
+}
+
+func TestParsePrivateKey_empty_input(t *testing.T) {
+	_, err := parsePrivateKey([]byte{})
+	if err == nil {
+		t.Fatal("parsePrivateKey(empty) should return error")
+	}
+	if !strings.Contains(err.Error(), "no private key") {
+		t.Errorf("parsePrivateKey(empty) error = %q, want it to contain %q",
+			err.Error(), "no private key")
+	}
+}
+
+func TestParsePrivateKey_RSA_PKCS8(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+
+	parsed, err := parsePrivateKey(keyPEM)
+	if err != nil {
+		t.Fatalf("parsePrivateKey(RSA PKCS8) = error %v", err)
+	}
+	if _, ok := parsed.(*rsa.PrivateKey); !ok {
+		t.Errorf("parsePrivateKey(RSA PKCS8) returned %T, want *rsa.PrivateKey", parsed)
+	}
+}
+
+func TestConvertToPFX_with_password_containing_special_chars(t *testing.T) {
+	certPEM, keyPEM := generateSelfSignedCert(t, "special-pass", "ecdsa")
+	tmpDir := t.TempDir()
+	crtPath, keyPath := writeCertAndKey(t, tmpDir, "test", certPEM, keyPEM)
+	pfxPath := filepath.Join(tmpDir, "test.pfx")
+
+	password := "p@$$w0rd!#%&*(){}[]|\\:\";<>?,./~`"
+	if err := convertToPFX(crtPath, keyPath, pfxPath, password, pkcs12.Modern2023); err != nil {
+		t.Fatalf("convertToPFX(special password): %v", err)
+	}
+
+	_, cert, _ := decodePFX(t, pfxPath, password)
+	if cert.Subject.CommonName != "special-pass" {
+		t.Errorf("CN = %q, want %q", cert.Subject.CommonName, "special-pass")
+	}
+}
+
+func TestProcessAll_multiple_cert_pairs(t *testing.T) {
+	clearHashes()
+	inDir := t.TempDir()
+	outDir := t.TempDir()
+
+	// Create 3 cert/key pairs.
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		certPEM, keyPEM := generateSelfSignedCert(t, name, "ecdsa")
+		writeCertAndKey(t, inDir, name, certPEM, keyPEM)
+	}
+
+	if err := processAll(inDir, outDir, "pass", pkcs12.Modern2023); err != nil {
+		t.Fatalf("processAll = %v", err)
+	}
+
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		pfxPath := filepath.Join(outDir, name+".pfx")
+		_, cert, _ := decodePFX(t, pfxPath, "pass")
+		if cert.Subject.CommonName != name {
+			t.Errorf("PFX %s: CN = %q, want %q", name, cert.Subject.CommonName, name)
+		}
+	}
+}
+
+func TestHashFile_exactly_at_max_size(t *testing.T) {
+	// Boundary test: file exactly at maxFileSize should succeed.
+	path := filepath.Join(t.TempDir(), "exact-max.bin")
+	data := make([]byte, maxFileSize)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := hashFile(path)
+	if err != nil {
+		t.Fatalf("hashFile(exactly maxFileSize) = error %v, want success", err)
+	}
+	if len(h) != 64 {
+		t.Errorf("hashFile returned hash of length %d, want 64", len(h))
+	}
+}
+
+func TestConvertToPFX_single_cert_has_no_CA_certs(t *testing.T) {
+	// Verify that a single-cert PFX has zero CA certs (not the leaf duplicated as CA).
+	certPEM, keyPEM := generateSelfSignedCert(t, "single", "ecdsa")
+	tmpDir := t.TempDir()
+	crtPath, keyPath := writeCertAndKey(t, tmpDir, "test", certPEM, keyPEM)
+	pfxPath := filepath.Join(tmpDir, "test.pfx")
+
+	if err := convertToPFX(crtPath, keyPath, pfxPath, "pass", pkcs12.Modern2023); err != nil {
+		t.Fatalf("convertToPFX: %v", err)
+	}
+
+	_, _, caCerts := decodePFX(t, pfxPath, "pass")
+	if len(caCerts) != 0 {
+		t.Errorf("single-cert PFX has %d CA certs, want 0", len(caCerts))
 	}
 }

@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	pgregory.net/rapid v1.2.0
 	software.sslmate.com/src/go-pkcs12 v0.7.0
 )
 
