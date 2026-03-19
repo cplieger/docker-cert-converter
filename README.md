@@ -1,8 +1,8 @@
-# docker-cert-converter
+# cert-converter
 
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
-[![GitHub release](https://img.shields.io/github/v/release/cplieger/docker-cert-converter)](https://github.com/cplieger/docker-cert-converter/releases)
-[![Image Size](https://ghcr-badge.egpl.dev/cplieger/cert-convert/size)](https://github.com/cplieger/docker-cert-converter/pkgs/container/cert-convert)
+[![GitHub release](https://img.shields.io/github/v/release/cplieger/cert-converter)](https://github.com/cplieger/cert-converter/releases)
+[![Image Size](https://ghcr-badge.egpl.dev/cplieger/cert-convert/size)](https://github.com/cplieger/cert-converter/pkgs/container/cert-convert)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 
