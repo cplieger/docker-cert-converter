@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026.04.01-b015ff4 (2026-04-01)
+
+### Added
+
+- Enhance logging with password status and debug traces
+- Test(cert-convert): add property-based and edge case tests
+- Test(cert-convert): add comprehensive test coverage for file watching and key parsing
+- Add security hardening and structured logging
+- Add file size validation and resource exhaustion tests
+- Test(apps): add comprehensive test coverage for identity loading and cert conversion
+- Add CLI health probes for distroless Docker healthchecks
+- Ci(validate): Add golangci-lint linting checks for Go apps
+- Add specific non-root version
+- Pull containers from github vs dockerfile build for all apps. Update jdupes github action to add release versions.
+- Added cert convert compose file
+
+### Fixed
+
+- Improve startup health state and retry logic
+- App fixes and cleanup
+- Fix build images
+- Fix go module caching with go.sum, fix linting.
+- Fix whitespace in all files
+- Fix versions and exclude [deploy-tool] from auto updates
+- Fix post build version
+- Fix env file name for cert-convert
+
+### Changed
+
+- Test(cert-convert): use bytes.Equal for slice comparison
+- Refactor(cert-convert): reorganize code structure and improve file handling
+- Migrate to structured logging and enhance validation
+- Refactor(cert-convert): extract certificate processing and health check logic
+- Test(cert-convert): improve certificate chain building and modernize type hints
+- Test(cert-convert): improve code quality and readability in test helpers
+- Consolidate age encryption hooks and re-encrypt all env files
+- Test(apps): refactor test structure and improve helper functions
+- Update health checks and standardize environment variable quoting
+- Update encrypted environment files across all services
+- Ci(validate,renovate): Consolidate golangci-lint to dynamic loop and expand critical infra coverage
+- Ci(workflows,dockerfiles): Refactor build and validation pipelines
+- Improve health check dependencies
+- New approach to env file management for sops
+- New approach to sops .env file naming
+- Trigger rebuilds for broken images
+- Update to new versioning scheme
+- Upload encoded env files
+- Revert to rolling image
+- Remove QEMU
+- Upgrade debian version
+- Update golang Docker tag
+- Pin dependencies
+- Update build versions
+- Pin dependencies
+- Revert [deploy-tool] secrets
+- Replace .env files with [deploy-tool] secrets
+- Update repo to [private-repo] from snippetspace/homelab
+- Removed space
+- Change cert-convert log output to stdout
+
+### Dependencies
+
+- Update gcr.io/distroless/static-debian13:nonroot Docker digest to 01e550f
+- Update gcr.io/distroless/static-debian13:nonroot Docker digest to f512d81
+- Update gcr.io/distroless/static-debian13:nonroot docker digest to 0376b51
+- Update gcr.io/distroless/static-debian13:nonroot docker digest to e3f9456
+- Update go to v1.26.0
+- Update go to v1.26.1
+- Update golang.org/x/crypto to v0.45.0 [security]
+- Update golang:1.25-alpine Docker digest to 660f0b8
+- Update golang:1.25-alpine Docker digest to 98e6cff
+- Update golang:1.25-alpine Docker digest to d9b2e14
+- Update golang:1.25-alpine Docker digest to e689855
+- Update golang:1.25-alpine Docker digest to f4622e3
+- Update golang:1.25-alpine Docker digest to f6751d8
+- Update golang:1.26-alpine docker digest to 2389ebf
+- Update software.sslmate.com/src/go-pkcs12 to v0.7.0
+
 ## 2026.03.21-0aabfbc (2026-03-22)
 
 ### Added
