@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.04.09-be1da00 (2026-04-10)
+
+### Dependencies
+
+- fix(deps): update module software.sslmate.com/src/go-pkcs12 to v0.7.1
+
 ## 2026.04.07-f8709e0 (2026-04-08)
 
 ### Changed

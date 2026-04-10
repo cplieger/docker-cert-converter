@@ -204,7 +204,7 @@ All dependencies are updated automatically via [Renovate](https://github.com/ren
 | gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | github.com/fsnotify/fsnotify | `v1.9.0` | [GitHub](https://github.com/fsnotify/fsnotify) |
 | pgregory.net/rapid | `v1.2.0` | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
-| software.sslmate.com/src/go-pkcs12 | `v0.7.0` | [SSLMate](https://pkg.go.dev/software.sslmate.com/src/go-pkcs12) |
+| software.sslmate.com/src/go-pkcs12 | `v0.7.1` | [SSLMate](https://pkg.go.dev/software.sslmate.com/src/go-pkcs12) |
 
 ## Design Principles
 
