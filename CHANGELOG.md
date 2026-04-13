@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026.04.13-98ff0b3 (2026-04-13)
+
+### Changed
+
+- Refactor(cert-convert): simplify logging and improve error handling
+- Update Go toolchain configuration
+
+### Dependencies
+
+- Update go to v1.26.2
+- Update golang:1.26-alpine docker digest to c2a1f7b
+- fix(deps): update module software.sslmate.com/src/go-pkcs12 to v0.7.1
+
 ## 2026.04.09-be1da00 (2026-04-10)
 
 ### Dependencies

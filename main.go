@@ -74,17 +74,14 @@ func main() {
 		passwordStatus = "configured"
 	}
 
-	if interval > 0 {
-		slog.Info("starting cert watcher",
-			"input", certsRootDir, "output", outputDir,
-			"password", passwordStatus,
-			"fallback_interval", interval, "encoder", encName)
-	} else {
-		slog.Info("starting cert watcher",
-			"input", certsRootDir, "output", outputDir,
-			"password", passwordStatus,
-			"fallback_scan", "disabled", "encoder", encName)
+	fallbackVal := any(interval)
+	if interval <= 0 {
+		fallbackVal = "disabled"
 	}
+	slog.Info("starting cert watcher",
+		"input", certsRootDir, "output", outputDir,
+		"password", passwordStatus,
+		"fallback_scan", fallbackVal, "encoder", encName)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -114,6 +111,7 @@ func main() {
 			slog.Warn("failed to watch directories, using polling only", "error", err)
 			pollLoop(ctx, certsRootDir, outputDir, password, enc, interval)
 		} else {
+			slog.Info("fsnotify active", "directories", watcher.WatchList())
 			watchLoop(ctx, watcher, certsRootDir, outputDir, password, enc, interval)
 		}
 	}
@@ -128,9 +126,13 @@ func setHealthy(ok bool) {
 	if ok {
 		if f, err := os.Create(healthFile); err == nil {
 			f.Close()
+		} else {
+			slog.Warn("failed to create health marker", "error", err)
 		}
 	} else {
-		os.Remove(healthFile)
+		if err := os.Remove(healthFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("failed to remove health marker", "error", err)
+		}
 	}
 }
 
@@ -191,8 +193,8 @@ func addWatchDirs(watcher *fsnotify.Watcher, root string) error {
 }
 
 // handleFsEvent processes a single fsnotify event, adding new directories
-// to the watcher and flagging cert/key changes for debounced processing.
-func handleFsEvent(event fsnotify.Event, watcher *fsnotify.Watcher, pending *bool, debounceTimer *time.Timer, debounce time.Duration) {
+// to the watcher and returning true if a cert/key file changed.
+func handleFsEvent(event fsnotify.Event, watcher *fsnotify.Watcher) bool {
 	if event.Has(fsnotify.Create) {
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 			if addErr := watcher.Add(event.Name); addErr != nil {
@@ -200,12 +202,7 @@ func handleFsEvent(event fsnotify.Event, watcher *fsnotify.Watcher, pending *boo
 			}
 		}
 	}
-	if strings.HasSuffix(event.Name, ".crt") || strings.HasSuffix(event.Name, ".key") {
-		if !*pending {
-			*pending = true
-			debounceTimer.Reset(debounce)
-		}
-	}
+	return strings.HasSuffix(event.Name, ".crt") || strings.HasSuffix(event.Name, ".key")
 }
 
 // watchLoop uses fsnotify for immediate reaction to cert changes,
@@ -238,7 +235,10 @@ func watchLoop(ctx context.Context, watcher *fsnotify.Watcher, certsRoot, outRoo
 			if !ok {
 				return
 			}
-			handleFsEvent(event, watcher, &pending, debounceTimer, debounce)
+			if handleFsEvent(event, watcher) && !pending {
+				pending = true
+				debounceTimer.Reset(debounce)
+			}
 
 		case <-debounceTimer.C:
 			pending = false
@@ -369,7 +369,11 @@ func invalidateHash(crtPath string) {
 func processAll(certsRoot, outRoot, password string, enc *pkcs12.Encoder) error {
 	return filepath.WalkDir(certsRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if path == certsRoot {
+				return err // root directory must be accessible
+			}
+			slog.Warn("skipping unreadable path", "path", path, "error", err)
+			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".crt") {
 			return nil
@@ -388,14 +392,17 @@ func processAll(certsRoot, outRoot, password string, enc *pkcs12.Encoder) error 
 
 		rel, err := filepath.Rel(certsRoot, path)
 		if err != nil {
-			return err
+			slog.Error("failed to compute relative path", "path", path, "error", err)
+			return nil
 		}
 		dir, file := filepath.Split(rel)
 		base := strings.TrimSuffix(file, ".crt")
 
 		destDir := filepath.Join(outRoot, dir)
 		if err := os.MkdirAll(destDir, 0o755); err != nil {
-			return err
+			slog.Error("failed to create output directory", "path", destDir, "error", err)
+			invalidateHash(path)
+			return nil
 		}
 		destPath := filepath.Join(destDir, base+".pfx")
 

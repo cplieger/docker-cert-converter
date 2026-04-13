@@ -704,101 +704,49 @@ func TestHandleFsEvent(t *testing.T) {
 		defer watcher.Close()
 
 		dir := t.TempDir()
-		pending := false
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
 
 		event := fsnotify.Event{Name: dir, Op: fsnotify.Create}
-		handleFsEvent(event, watcher, &pending, timer, time.Second)
-
-		if pending {
-			t.Error("handleFsEvent set pending for directory create (no .crt/.key)")
+		if handleFsEvent(event, watcher) {
+			t.Error("handleFsEvent should return false for directory create (no .crt/.key)")
 		}
 	})
 
-	t.Run("create .crt file sets pending", func(t *testing.T) {
+	t.Run("create .crt file returns true", func(t *testing.T) {
 		watcher, err := fsnotify.NewWatcher()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer watcher.Close()
-
-		pending := false
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
 
 		event := fsnotify.Event{Name: "/some/path/cert.crt", Op: fsnotify.Create}
-		handleFsEvent(event, watcher, &pending, timer, time.Second)
-
-		if !pending {
-			t.Error("handleFsEvent should set pending for .crt file")
+		if !handleFsEvent(event, watcher) {
+			t.Error("handleFsEvent should return true for .crt file")
 		}
 	})
 
-	t.Run("write .key file sets pending", func(t *testing.T) {
+	t.Run("write .key file returns true", func(t *testing.T) {
 		watcher, err := fsnotify.NewWatcher()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer watcher.Close()
-
-		pending := false
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
 
 		event := fsnotify.Event{Name: "/certs/domain.key", Op: fsnotify.Write}
-		handleFsEvent(event, watcher, &pending, timer, time.Second)
-
-		if !pending {
-			t.Error("handleFsEvent should set pending for .key file")
+		if !handleFsEvent(event, watcher) {
+			t.Error("handleFsEvent should return true for .key file")
 		}
 	})
 
-	t.Run("non-cert file does not set pending", func(t *testing.T) {
+	t.Run("non-cert file returns false", func(t *testing.T) {
 		watcher, err := fsnotify.NewWatcher()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer watcher.Close()
-
-		pending := false
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
 
 		event := fsnotify.Event{Name: "/some/file.txt", Op: fsnotify.Write}
-		handleFsEvent(event, watcher, &pending, timer, time.Second)
-
-		if pending {
-			t.Error("handleFsEvent should not set pending for .txt file")
-		}
-	})
-
-	t.Run("already pending does not re-trigger", func(t *testing.T) {
-		watcher, err := fsnotify.NewWatcher()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer watcher.Close()
-
-		pending := true
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
-
-		event := fsnotify.Event{Name: "/certs/test.crt", Op: fsnotify.Write}
-		handleFsEvent(event, watcher, &pending, timer, 5*time.Second)
-
-		// pending should still be true, timer should NOT have been reset.
-		// We verify by checking the timer doesn't fire within a short window.
-		select {
-		case <-timer.C:
-			t.Error("timer should not fire when already pending")
-		case <-time.After(10 * time.Millisecond):
-			// expected — timer was not reset
+		if handleFsEvent(event, watcher) {
+			t.Error("handleFsEvent should return false for .txt file")
 		}
 	})
 }
